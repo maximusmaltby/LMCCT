@@ -1,5 +1,8 @@
 import os
 import sys
+import time
+import pyi_splash
+import tkinter as tk
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import ttkbootstrap as ttk
@@ -7,9 +10,9 @@ from ttkbootstrap.constants import *
 from tkinter import filedialog
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for PyInstaller """
+    """Get absolute path to resource, works for PyInstaller and similar tools."""
     base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
+    return os.path.join(base_path, "img", relative_path)
 
 def browse_folder(entry):
     """Open a file dialog to select a folder and set it in the entry box."""
@@ -26,7 +29,7 @@ def search_lml_folder():
         r"C:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml"
     ]
     for path in common_paths:
-        if os.path.isdir(path):
+        if os.path.isdir(path) and os.access(path, os.R_OK):
             return path
     return ""
 
@@ -75,7 +78,6 @@ def get_load_order(mods_xml_path):
 
 def display_message(app, title, message):
     """Create a themed message window with custom icon and content, centered and replacing the main window."""
-    app.withdraw()
     msg_window = ttk.Toplevel(app)
     msg_window.title(title)
     msg_window.iconbitmap(resource_path("RDR2.ico"))
@@ -91,12 +93,20 @@ def display_message(app, title, message):
     msg_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     ttk.Label(msg_window, text=message, padding=20, anchor="center", wraplength=window_width - 20).pack(expand=True)
-    ttk.Button(msg_window, text="OK", command=lambda: close_message(msg_window, app), style="Custom.TButton").pack(pady=10)
+    ttk.Button(
+        msg_window,
+        text="OK",
+        command=lambda: close_message(msg_window, app),
+        style="Custom.TButton"
+    ).pack(pady=10)
+
+    msg_window.protocol("WM_DELETE_WINDOW", lambda: close_message(msg_window, app))
 
 def close_message(msg_window, app):
-    """Close the message window and re-show the main window."""
+    """Close the message window and ensure the main application window is fully closed."""
     msg_window.destroy()
-    app.deiconify()
+    if not app.winfo_exists():
+        app.quit()
 
 def display_conflicts(app, conflicts, load_order):
     """Display conflicts and mod precedence based on load order, prioritizing 'stream' over 'replace' folders."""
@@ -117,24 +127,29 @@ def display_conflicts(app, conflicts, load_order):
 
 def check_conflicts(app, entry):
     lml_folder = entry.get()
-    if not os.path.isdir(lml_folder):
-        display_message(app, "Error", "Invalid folder path. Please select a valid LML folder.")
+    if not os.path.isdir(lml_folder) or not os.access(lml_folder, os.R_OK):
+        display_message(app, "Error", "Invalid or inaccessible folder path. Please select a valid LML folder.")
         return
 
     file_map = get_mods_and_files(lml_folder)
     conflicts = find_conflicts(file_map)
 
     mods_xml_path = os.path.join(lml_folder, "mods.xml")
-    if not os.path.isfile(mods_xml_path):
-        display_message(app, "Error", "mods.xml not found in the selected folder. Exiting.")
+    if not os.path.isfile(mods_xml_path) or not os.access(mods_xml_path, os.R_OK):
+        display_message(app, "Error", "mods.xml not found or inaccessible in the selected folder. Exiting.")
         return
     load_order = get_load_order(mods_xml_path)
 
     display_conflicts(app, conflicts, load_order)
 
 def main():
+    # Close the splash screen if present
+    pyi_splash.close()
+    
     app = ttk.Window(themename="cosmo")
     app.title("LML Mod Conflict Checker Tool")
+
+    app.protocol("WM_DELETE_WINDOW", app.quit)
 
     window_width = 580
     window_height = 120
