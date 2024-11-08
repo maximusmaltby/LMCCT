@@ -1,195 +1,272 @@
 import os
 import sys
-import time
-import pyi_splash
-import tkinter as tk
+import string
+from CTkListbox import *
+from PIL import Image, ImageTk
+import customtkinter as ctk
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
 from tkinter import filedialog
 
-def resource_path(relative_path):
-    """Get absolute path to resource, works for PyInstaller and similar tools."""
-    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, "img", relative_path)
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
+
+if getattr(sys, 'frozen', False):
+    base_path = os.path.dirname(sys.executable)
+    IMG_DIR = os.path.join(base_path, 'lib', 'img')
+else:
+    base_path = os.path.dirname(__file__)
+    IMG_DIR = os.path.join(base_path, 'img')
+
+def load_image(filename):
+    try:
+        img_path = os.path.join(IMG_DIR, filename)
+        return Image.open(img_path)
+    except FileNotFoundError:
+        print(f"Error: Image file {filename} not found in {IMG_DIR}.")
+        return None
 
 def browse_folder(entry):
-    """Open a file dialog to select a folder and set it in the entry box."""
     folder_path = filedialog.askdirectory(title="Select your 'lml' folder")
     if folder_path:
-        entry.delete(0, tk.END)
+        entry.delete(0, ctk.END)
         entry.insert(0, folder_path)
 
 def search_lml_folder():
-    """Search common installation paths for the 'lml' folder."""
-    common_paths = [
+    possible_paths = [
         r"C:\Program Files (x86)\Steam\steamapps\common\Red Dead Redemption 2\lml",
         r"C:\Steam\steamapps\common\Red Dead Redemption 2\lml",
-        r"C:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml"
+        r"C:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"D:\Program Files (x86)\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"D:\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"D:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"E:\Program Files (x86)\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"E:\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"E:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"F:\Program Files (x86)\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"F:\Steam\steamapps\common\Red Dead Redemption 2\lml",
+        r"F:\Games\Steam\steamapps\common\Red Dead Redemption 2\lml"
     ]
-    for path in common_paths:
+
+    for path in possible_paths:
         if os.path.isdir(path) and os.access(path, os.R_OK):
             return path
     return ""
 
 def get_mods_and_files(lml_folder):
-    """Collect filenames from each mod folder in the 'lml' directory, ignoring subfolder structure within each mod."""
     file_map = defaultdict(list)
     ignored_files = {"install.xml", "strings.gxt2"}
-    
+
     for mod_folder in os.listdir(lml_folder):
         mod_path = os.path.join(lml_folder, mod_folder)
-        
         if os.path.isdir(mod_path):
             for root, _, files in os.walk(mod_path):
                 for file in files:
                     if file.lower() in ignored_files:
                         continue
-                    
-                    if "stream" in root.lower():
-                        priority = 2
-                    elif "replace" in root.lower():
-                        priority = 1
-                    else:
-                        priority = 0
-                    
+                    priority = 2 if "stream" in root.lower() else 1 if "replace" in root.lower() else 0
                     file_map[file.lower()].append((mod_folder, priority))
     return file_map
 
 def find_conflicts(file_map):
-    """Identify files that are modified by more than one mod, ignoring folder structure and filtering within the same mod."""
     conflicts = {}
     for file, mods in file_map.items():
         unique_mods = {mod for mod, _ in mods}
-        
         if len(unique_mods) > 1:
             conflicts[file] = mods
     return conflicts
 
 def get_load_order(mods_xml_path):
-    """Parse mods.xml to get the mod load order."""
     tree = ET.parse(mods_xml_path)
     root = tree.getroot()
-    load_order = []
-    for mod in root.find("LoadOrder"):
-        load_order.append(mod.text)
-    return load_order
+    return [mod.text for mod in root.find("LoadOrder")]
 
-def display_message(app, title, message):
-    """Create a themed message window with custom icon and content, centered and replacing the main window."""
-    msg_window = ttk.Toplevel(app)
-    msg_window.title(title)
-    msg_window.iconbitmap(resource_path("RDR2.ico"))
+def display_conflict_summary(app, mods, conflicts, lml_folder):
+    load_order = get_load_order(os.path.join(lml_folder, "mods.xml"))
+    sorted_mods = [mod for mod in load_order if mod in mods]
+    
+    conflict_window = ctk.CTkToplevel(app)
+    conflict_window.withdraw()
+    conflict_window.title("LML Mod Conflict Checker Tool")
+    conflict_window.geometry("800x600")
+    conflict_window.resizable(False, False)
 
-    lines = message.count("\n") + 1
-    max_line_length = max(len(line) for line in message.split("\n"))
-    window_width = min(600, max(300, max_line_length * 7))
-    window_height = min(500, max(150, lines * 20))
-    screen_width = msg_window.winfo_screenwidth()
-    screen_height = msg_window.winfo_screenheight()
-    x = (screen_width // 2) - (window_width // 2)
-    y = (screen_height // 2) - (window_height // 2)
-    msg_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    icon_path = os.path.join(IMG_DIR, "RDR2.ico")
+    conflict_window.after(201, lambda: conflict_window.iconbitmap(icon_path))
 
-    ttk.Label(msg_window, text=message, padding=20, anchor="center", wraplength=window_width - 20).pack(expand=True)
-    ttk.Button(
-        msg_window,
-        text="OK",
-        command=lambda: close_message(msg_window, app),
-        style="Custom.TButton"
-    ).pack(pady=10)
+    left_frame = ctk.CTkFrame(conflict_window, width=350, height=550)
+    right_frame = ctk.CTkFrame(conflict_window, width=350, height=550)
 
-    msg_window.protocol("WM_DELETE_WINDOW", lambda: close_message(msg_window, app))
+    left_frame.grid(row=0, column=0, sticky="nswe", padx=10, pady=10)
+    right_frame.grid(row=0, column=1, sticky="nswe", padx=10, pady=10)
 
-def close_message(msg_window, app):
-    """Close the message window and ensure the main application window is fully closed."""
-    msg_window.destroy()
-    if not app.winfo_exists():
-        app.quit()
+    top_left_frame = ctk.CTkFrame(left_frame)
+    top_left_frame.pack(fill="x", anchor="nw", pady=(0, 5))
 
-def display_conflicts(app, conflicts, load_order):
-    """Display conflicts and mod precedence based on load order, prioritizing 'stream' over 'replace' folders."""
+    ctk.CTkLabel(top_left_frame, text="Mods", font=("Inter", 18, "bold")).pack(side="left", padx=5)
+
+    open_lml_button = ctk.CTkButton(
+        top_left_frame,
+        text="Browse LML Folder",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        command=lambda: open_lml_folder(lml_folder)
+    )
+    open_lml_button.pack(side="left", padx=20)
+
+    browse_button = ctk.CTkButton(
+        top_left_frame,
+        text="Open Mod Folder",
+        state="disabled",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        command=lambda: open_mod_folder(mod_listbox.get(), lml_folder)
+    )
+    browse_button.pack(side="right", padx=10)
+    browse_button.pack(side="top", pady=10)
+
+    mod_listbox = CTkListbox(
+        left_frame,
+        command=lambda x: browse_button.configure(state="normal"),
+        height=500,
+        width=350,
+        highlight_color="#8b0000",
+        hover_color="#b22222"
+    )
+    mod_listbox.pack(fill="both", expand=True)
+
+    max_mod_name_length = max(len(mod) for mod in sorted_mods)
+
+    for index, mod in enumerate(sorted_mods):
+        if index == 0:
+            mod_display = f"{mod:<{max_mod_name_length}} (Lowest Priority)"
+        elif index == len(sorted_mods) - 1:
+            mod_display = f"{mod:<{max_mod_name_length}} (Highest Priority)"
+        else:
+            mod_display = mod
+        mod_listbox.insert(ctk.END, mod_display)
+
+    ctk.CTkLabel(right_frame, text="Conflicts", font=("Inter", 18, "bold")).pack(anchor="nw", pady=10, padx=5)
+
+    conflict_text = ctk.CTkTextbox(right_frame, wrap="word", height=500, width=350)
+    conflict_text.pack(fill="both", expand=True)
+
     if conflicts:
-        conflict_message = "Conflicting files found:\n"
         for file, mods in conflicts.items():
-            mods_sorted = sorted(
-                mods,
-                key=lambda mod: (-mod[1], load_order.index(mod[0]) if mod[0] in load_order else -1)
-            )
-            conflict_message += f"\nFile '{file}' is modified by the following mods (in order of precedence):\n"
-            for mod, priority in mods_sorted:
+            conflict_text.insert(ctk.END, f"File '{file}' is modified by:\n")
+            for mod, priority in mods:
                 label = f"{mod} (stream)" if priority == 2 else (f"{mod} (replace)" if priority == 1 else mod)
-                conflict_message += f" - {label}\n"
-        display_message(app, "LML Mod Conflict Checker Tool", conflict_message)
+                conflict_text.insert(ctk.END, f" - {label}\n")
+            conflict_text.insert(ctk.END, "\n")
     else:
-        display_message(app, "LML Mod Conflict Checker Tool", "No conflicts found.")
+        conflict_text.insert(ctk.END, "No conflicts found.")
+
+    conflict_text.configure(state=ctk.DISABLED)
+
+    def update_scrollbar():
+        if conflict_text.yview()[1] < 1.0:
+            conflict_scrollbar.pack(side="right", fill="y")
+        else:
+            conflict_scrollbar.pack_forget()
+    
+    conflict_scrollbar = ctk.CTkScrollbar(right_frame, command=conflict_text.yview)
+    conflict_text.configure(yscrollcommand=lambda *args: (conflict_scrollbar.set(*args), update_scrollbar()))
+
+    conflict_window.update_idletasks()
+
+    window_width = conflict_window.winfo_width()
+    window_height = conflict_window.winfo_height()
+    screen_width = conflict_window.winfo_screenwidth()
+    screen_height = conflict_window.winfo_screenheight()
+    x = (screen_width - window_width) // 2
+    y = (screen_height - window_height) // 2
+    conflict_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+    conflict_window.deiconify()
+
+    conflict_window.protocol("WM_DELETE_WINDOW", app.quit)
+
+def open_mod_folder(selected_mod, lml_folder):
+    mod_folder_path = os.path.join(lml_folder, selected_mod)
+    if os.path.isdir(mod_folder_path):
+        os.startfile(mod_folder_path)
+    else:
+        print(f"Error: Folder '{mod_folder_path}' does not exist.")
+
+def open_lml_folder(lml_folder):
+    if os.path.isdir(lml_folder):
+        os.startfile(lml_folder)
+    else:
+        print(f"Error: LML folder '{lml_folder}' does not exist.")
 
 def check_conflicts(app, entry):
-    lml_folder = entry.get()
+    selected_folder = entry.get()
+    lml_folder = os.path.join(selected_folder, "lml") if os.path.basename(selected_folder).lower() == "red dead redemption 2" else selected_folder
     if not os.path.isdir(lml_folder) or not os.access(lml_folder, os.R_OK):
-        display_message(app, "Error", "Invalid or inaccessible folder path. Please select a valid LML folder.")
+        ctk.CTkMessagebox.show_warning(title="Error", message="Invalid or inaccessible folder path. Please select a valid LML folder.")
         return
 
     file_map = get_mods_and_files(lml_folder)
     conflicts = find_conflicts(file_map)
+    mods = [mod for mod in os.listdir(lml_folder) if os.path.isdir(os.path.join(lml_folder, mod))]
+    
+    display_conflict_summary(app, mods, conflicts, lml_folder)
+    app.withdraw()
 
-    mods_xml_path = os.path.join(lml_folder, "mods.xml")
-    if not os.path.isfile(mods_xml_path) or not os.access(mods_xml_path, os.R_OK):
-        display_message(app, "Error", "mods.xml not found or inaccessible in the selected folder. Exiting.")
-        return
-    load_order = get_load_order(mods_xml_path)
+def show_splash():
+    splash_width, splash_height = 600, 350
+    splash_root = ctk.CTk()
+    splash_root.overrideredirect(True)
+    screen_width, screen_height = splash_root.winfo_screenwidth(), splash_root.winfo_screenheight()
+    x, y = (screen_width - splash_width) // 2, (screen_height - splash_height) // 2
+    splash_root.geometry(f"{splash_width}x{splash_height}+{x}+{y}")
 
-    display_conflicts(app, conflicts, load_order)
+    header_img = load_image("header.webp")
+    if header_img:
+        header_img = header_img.resize((splash_width, splash_height), Image.LANCZOS)
+        splash_img = ImageTk.PhotoImage(header_img)
+        splash_label = ctk.CTkLabel(splash_root, image=splash_img, text="")
+        splash_label.pack()
+        splash_root.splash_img = splash_img
+        splash_root.after(2000, splash_root.destroy)
+        splash_root.mainloop()
+    else:
+        splash_root.destroy()
 
 def main():
-    # Close the splash screen if present
-    pyi_splash.close()
+    show_splash()
     
-    app = ttk.Window(themename="cosmo")
+    app = ctk.CTk()
     app.title("LML Mod Conflict Checker Tool")
-
-    app.protocol("WM_DELETE_WINDOW", app.quit)
-
-    window_width = 580
-    window_height = 120
-    screen_width = app.winfo_screenwidth()
-    screen_height = app.winfo_screenheight()
-    x = (screen_width // 2) - (window_width // 2)
-    y = (screen_height // 2) - (window_height // 2)
-    app.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    app.geometry("640x120")
     app.resizable(False, False)
-    app.iconbitmap(resource_path("RDR2.ico"))
+    
+    icon_path = os.path.join(IMG_DIR, "RDR2.ico")
+    app.after(201, lambda: app.iconbitmap(icon_path))
 
-    ttk.Label(app, text="Enter LML Folder Path:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+    ctk.CTkLabel(app, text="Enter LML Folder Path:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
 
     lml_path = search_lml_folder()
-    entry = ttk.Entry(app, width=55)
+    entry = ctk.CTkEntry(app, width=300)
     entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+
+    browse_button = ctk.CTkButton(app, text="Browse", command=lambda: browse_folder(entry), fg_color="#b22222", hover_color="#8b0000")
+    browse_button.grid(row=0, column=2, padx=10, pady=10, sticky="w")
+    
+    check_button = ctk.CTkButton(app, text="Check Conflicts", command=lambda: check_conflicts(app, entry), fg_color="#b22222", hover_color="#8b0000")
+    check_button.grid(row=1, column=0, columnspan=3, pady=20)
+
     if lml_path:
         entry.insert(0, lml_path)
-
-    style = ttk.Style()
-    style.configure(
-        "Custom.TButton",
-        foreground="white",
-        background="#b22222",
-        borderwidth=0,
-        padding=(5, 3),
-        focusthickness=0,
-        focuscolor="none",
-        relief="flat"
-    )
-    style.map(
-        "Custom.TButton",
-        background=[("active", "#8b0000")],
-    )
-
-    browse_button = ttk.Button(app, text="Browse", style="Custom.TButton", command=lambda: browse_folder(entry))
-    browse_button.grid(row=0, column=2, padx=10, pady=10, sticky="w")
-
-    check_button = ttk.Button(app, text="Check Conflicts", style="Custom.TButton", command=lambda: check_conflicts(app, entry))
-    check_button.grid(row=1, column=0, columnspan=3, pady=20)
+    
+    app.update_idletasks()  
+    window_width = app.winfo_width()
+    window_height = app.winfo_height()
+    screen_width = app.winfo_screenwidth()
+    screen_height = app.winfo_screenheight()
+    x = (screen_width - window_width) // 2
+    y = (screen_height - window_height) // 2
+    app.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     app.mainloop()
 
