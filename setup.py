@@ -10,7 +10,7 @@ executables = [
     Executable(
         script="LMCCT.py",
         base=base,
-        icon=os.path.join(img_dir, "RDR2.ico"),
+        icon=os.path.join(img_dir, "lmcct.ico"),
         target_name="LMCCT.exe",
         manifest="app.manifest",
     )
@@ -27,7 +27,7 @@ build_options = {
 
 setup(
     name="LML Mod Conflict Checker Tool",
-    version="1.1.0",
+    version="1.2.0",
     description="LML Mod Conflict Checker Tool",
     author="generatedmax - Nexus Mods",
     options={"build_exe": build_options},
