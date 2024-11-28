@@ -24,7 +24,7 @@ build_options = {
 
 setup(
     name="LML Mod Conflict Checker Tool",
-    version="1.4.0",
+    version="1.5.0",
     description="LML Mod Conflict Checker Tool",
     author="generatedmax - Nexus Mods",
     options={"build_exe": build_options},

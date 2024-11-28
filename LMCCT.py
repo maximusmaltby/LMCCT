@@ -2,10 +2,16 @@
 
 import os
 import sys
+import uuid
+import json
+import time
+import base64
 import string
 import shutil
+import zipfile
 import difflib
 import requests
+import threading
 import subprocess
 import webbrowser
 import customtkinter as ctk
@@ -18,9 +24,11 @@ from tkinter import filedialog
 from tkinter import messagebox
 from PIL import Image, ImageTk
 from customtkinter import CTkImage
+from websocket import WebSocketApp
 from difflib import SequenceMatcher
 from collections import defaultdict
 from tklinenums import TkLineNumbers
+from cryptography.fernet import Fernet
 
 if getattr(sys, 'frozen', False):
     base_path = os.path.dirname(sys.executable)
@@ -69,8 +77,37 @@ def search_lml_folder():
         if os.path.isdir(path) and os.access(path, os.R_OK):
             return path
     return ""
+    
+def generate_key():
+    """Generate a key for encrypting the API key. Store it securely."""
+    return base64.urlsafe_b64encode(os.urandom(32))
 
+def get_encryption_key():
+    """Retrieve or generate the encryption key."""
+    key_path = os.path.join(os.getenv('APPDATA'), 'LML Mod Conflict Checker Tool', 'encryption.key')
+    if not os.path.exists(key_path):
+        os.makedirs(os.path.dirname(key_path), exist_ok=True)
+        key = generate_key()
+        with open(key_path, 'wb') as key_file:
+            key_file.write(key)
+    else:
+        with open(key_path, 'rb') as key_file:
+            key = key_file.read()
+    return key
 
+def encrypt_text(plain_text):
+    """Encrypt the given plain text."""
+    key = get_encryption_key()
+    fernet = Fernet(key)
+    return fernet.encrypt(plain_text.encode()).decode()
+
+def decrypt_text(encrypted_text):
+    """Decrypt the given encrypted text."""
+    key = get_encryption_key()
+    fernet = Fernet(key)
+    return fernet.decrypt(encrypted_text.encode()).decode()
+    
+    
 # --- 3. Data Management Functions ---
 
 def get_mods_and_files(lml_folder):
@@ -199,19 +236,228 @@ def move_down(listbox, mods_xml_path):
 
 def open_nexus_link():
     webbrowser.open("https://www.nexusmods.com/reddeadredemption2/mods/5180")
-    
-def check_for_update(version_label):
-    """Check for updates and update the version label if a new version is available."""
+
+def check_for_update(version_label, main_window):
+    """Check for updates, and if available, present options to download Installer or Portable."""
     try:
         response = requests.get("https://pastebin.com/raw/gGXu4uA8", timeout=5)
         response.raise_for_status()
         remote_version = response.text.strip()
 
-        if remote_version != "1.4.0":
-            version_label.configure(text="Update " + remote_version + " Available!", text_color="#f88379")
-    except requests.RequestException:
-        print("Failed to check for updates.")
+        if remote_version != "1.5.0":
+            version_label.configure(
+                text=f"Update {remote_version} Available!",
+                text_color="#f88379",
+            )
+            
+            api_key = config.get("api_key", "")
+            if not api_key:
+                return
+
+            game_domain_name = "reddeadredemption2"
+            mod_id = 5180
+            files_url = f"https://api.nexusmods.com/v1/games/{game_domain_name}/mods/{mod_id}/files.json"
+            headers = {
+                'accept': 'application/json',
+                'apikey': api_key
+            }
+
+            files_response = requests.get(files_url, headers=headers)
+            files_response.raise_for_status()
+            files_data = files_response.json()
+
+            installer_file_id = None
+            portable_file_id = None
+
+            for file_entry in files_data.get("files", []):
+                if "Installer" in file_entry.get("name", ""):
+                    installer_file_id = file_entry["file_id"]
+                elif "Portable" in file_entry.get("name", ""):
+                    portable_file_id = file_entry["file_id"]
+
+            if not installer_file_id or not portable_file_id:
+                raise ValueError("Failed to find file IDs for Installer or Portable.")
+
+            def download_update(event):
+                choice = update_dialog(main_window)
+                if choice in ["installer", "portable"]:
+                    selected_file_id = installer_file_id if choice == "installer" else portable_file_id
+                    download_url = f"https://api.nexusmods.com/v1/games/{game_domain_name}/mods/{mod_id}/files/{selected_file_id}/download_link.json"
+
+                    download_response = requests.get(download_url, headers=headers)
+                    download_response.raise_for_status()
+                    download_links = download_response.json()
+
+                    if download_links:
+                        download_link = download_links[0]['URI']
+
+                        if choice == "installer":
+                            download_installer(download_link)
+                        else:
+                            download_portable(download_link)
+                    else:
+                        print("No download links found.")
+                elif choice == "cancel":
+                    print("Update download cancelled.")
+            if api_key:
+                version_label.configure(cursor="hand2")
+                version_label.bind("<Button-1>", download_update)
+        else:
+            print("No updates available.")
+    except requests.exceptions.RequestException as err:
+        print(f"Failed to check for updates: {err}")
+    except KeyError as key_err:
+        print(f"Unexpected response format: Missing key {key_err}")
+    except ValueError as val_err:
+        print(val_err)
+
+def download_installer(download_url):
+    """
+    Download the Installer ZIP file, extract it, and run the installer with /silent command.
+    """
+    try:
+        appdata_dir = os.getenv('APPDATA')
+        lml_folder = os.path.join(appdata_dir, 'LML Mod Conflict Checker Tool')
+        os.makedirs(lml_folder, exist_ok=True)
+        zip_file_path = os.path.join(lml_folder, "installer.zip")
+        extract_path = os.path.join(lml_folder, "installer")
+
+        print("Starting download...")
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()
+
+        with open(zip_file_path, 'wb') as zip_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                zip_file.write(chunk)
+        print(f"Downloaded installer ZIP to: {zip_file_path}")
+
+        os.makedirs(extract_path, exist_ok=True)
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_path)
+        print(f"Extracted installer to: {extract_path}")
+
+        installer_exe = None
+        for root, dirs, files in os.walk(extract_path):
+            for file in files:
+                if file.lower().endswith('.exe'):
+                    installer_exe = os.path.join(root, file)
+                    break
+            if installer_exe:
+                break
+
+        if not installer_exe:
+            raise FileNotFoundError("Installer executable not found in the extracted files.")
+
+        print(f"Found installer executable: {installer_exe}")
+
+        print("Running installer...")
+        subprocess.Popen([installer_exe, "/silent", "/norestart", "/closeapplications", "/restartapplications"])
+
+    except requests.RequestException as req_err:
+        print(f"Error downloading the installer: {req_err}")
+    except zipfile.BadZipFile as zip_err:
+        print(f"Error extracting the installer ZIP: {zip_err}")
+    except subprocess.CalledProcessError as sub_err:
+        print(f"Error running the installer: {sub_err}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+def download_portable(download_url):
+    """
+    Download the Portable ZIP file and allow the user to save it via a file dialog.
+    """
+    try:
+        default_save_path = os.path.join(os.path.expanduser("~"), "Downloads", "LMCCT - Portable.zip")
+
+        save_path = filedialog.asksaveasfilename(
+            title="Download LMCCT - Portable",
+            defaultextension=".zip",
+            initialfile="LMCCT - Portable.zip",
+            initialdir=os.path.join(os.path.expanduser("~"), "Downloads"),
+            filetypes=[("ZIP Files", "*.zip"), ("All Files", "*.*")]
+        )
+
+        if not save_path:
+            print("Download cancelled by user.")
+            return
+
+        print("Starting download...")
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()
+
+        with open(save_path, 'wb') as file:
+            for chunk in response.iter_content(chunk_size=8192):
+                file.write(chunk)
+        print(f"Downloaded portable version to: {save_path}")
+
+        messagebox.showinfo("Download Complete", f"LMCCT downloaded successfully to:\n{save_path}")
+
+    except requests.RequestException as req_err:
+        print(f"Error downloading the portable version: {req_err}")
+        messagebox.showerror("Error", f"Failed to download the portable version:\n{req_err}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        messagebox.showerror("Error", f"An unexpected error occurred:\n{e}")
+
+def cleanup_installer_files():
+    """
+    Check for the presence of installer.zip and the installer folder in AppData.
+    Delete them if they exist.
+    """
+    try:
+        appdata_dir = os.getenv('APPDATA')
+        lml_folder = os.path.join(appdata_dir, 'LML Mod Conflict Checker Tool')
+        zip_file_path = os.path.join(lml_folder, "installer.zip")
+        extract_path = os.path.join(lml_folder, "installer")
+
+        if os.path.exists(zip_file_path):
+            os.remove(zip_file_path)
+            print(f"Deleted: {zip_file_path}")
+
+        if os.path.exists(extract_path):
+            shutil.rmtree(extract_path)
+            print(f"Deleted folder: {extract_path}")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+def update_dialog(main_window):
+    """Ask the user to select between manual conflict resolution or auto-merge."""
+    dialog = ctk.CTkToplevel(main_window)
+    dialog.title("Download LMCCT")
     
+    screen_width = dialog.winfo_screenwidth()
+    screen_height = dialog.winfo_screenheight()
+    initial_width = min(480, int(screen_width * 0.9))
+    initial_height = min(100, int(screen_height * 0.9))
+
+    x = max(0, (screen_width - initial_width) // 2)
+    y = max(0, (screen_height - initial_height) // 2)
+
+    dialog.geometry(f"{initial_width}x{initial_height}+{x}+{y}")
+    dialog.wm_minsize(initial_width, initial_height)
+    dialog.resizable(False, False)
+    
+    icon_path = os.path.join(IMG_DIR, "lmcct.ico")
+    dialog.after(201, lambda: dialog.iconbitmap(icon_path))
+
+    result = {"choice": "cancel"}
+
+    def set_choice(choice):
+        result["choice"] = choice
+        dialog.destroy()
+
+    ctk.CTkLabel(dialog, text="Please select which version to download:", font=("Segoe UI", 14, "bold")).grid(row=0, column=0, columnspan=3, padx=10, pady=10)
+    
+    ctk.CTkButton(dialog, text="Portable", command=lambda: set_choice("portable"), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 14, "bold")).grid(row=1, column=0, padx=10)
+    ctk.CTkButton(dialog, text="Installer", command=lambda: set_choice("installer"), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 14, "bold")).grid(row=1, column=1, padx=10)
+    ctk.CTkButton(dialog, text="Cancel", command=lambda: set_choice("cancel"), fg_color="darkgrey", hover_color="grey", font=("Segoe UI", 14, "bold")).grid(row=1, column=2, padx=10)
+
+    dialog.transient(main_window)
+    dialog.grab_set()
+    dialog.wait_window()
+
+    return result["choice"]
+
 def open_mod_folder(selected_mod, lml_folder):
     selected_mod = selected_mod.replace(" (Lowest Priority)", "").replace(" (Highest Priority)", "")
     mod_folder_path = os.path.join(lml_folder, selected_mod)
@@ -254,33 +500,32 @@ def get_config_path():
     return os.path.join(app_folder, 'lmcct.dat')
 
 def load_config():
-    """Load the configuration from lmcct.dat, upgrading older formats if needed."""
+    """Load the configuration from lmcct.dat, decrypting the API key if present."""
     config_path = get_config_path()
-    config = {"path": None, "theme": "Dark"}
+    config = {"path": None, "theme": "Dark", "api_key": None}
 
     if os.path.exists(config_path):
         with open(config_path, 'r') as file:
             lines = file.readlines()
 
-        if len(lines) == 1 and not lines[0].startswith("path="):
-            config["path"] = lines[0].strip()
-            with open(config_path, 'w') as upgrade_file:
-                upgrade_file.write(f'path="{config["path"]}"\n')
-                upgrade_file.write(f'theme="{config["theme"]}"\n')
-        else:
-            for line in lines:
-                key, _, value = line.partition("=")
-                key, value = key.strip(), value.strip().strip('"')
-                if key in config:
-                    config[key] = value
+        for line in lines:
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"')
+            if key == "api_key":
+                try:
+                    config[key] = decrypt_text(value)
+                except Exception as e:
+                    config[key] = None
+            elif key in config:
+                config[key] = value
 
     return config
 
-def save_config(path=None, theme=None):
+def save_config(path=None, theme=None, api_key=None):
     """Save the configuration to lmcct.dat."""
     config_path = get_config_path()
 
-    current_config = {"path": None, "theme": "Dark"}
+    current_config = {"path": None, "theme": "Dark", "api_key": None}
     if os.path.exists(config_path):
         with open(config_path, 'r') as file:
             lines = file.readlines()
@@ -294,6 +539,8 @@ def save_config(path=None, theme=None):
         current_config["path"] = path
     if theme is not None:
         current_config["theme"] = theme
+    if api_key is not None:
+        current_config["api_key"] = encrypt_text(api_key)
 
     with open(config_path, 'w') as file:
         for key, value in current_config.items():
@@ -308,6 +555,61 @@ def check_and_save_path(app, entry):
         check_conflicts(app, lml_folder)
     else:
         ctk.CTkMessagebox.show_warning(title="Error", message="Invalid or inaccessible folder path. Please select a valid LML folder.")
+        
+def endorse_mod(api_key):
+    """Endorse a specific mod on Nexus Mods for Red Dead Redemption 2."""
+    try:
+        game_domain_name = "reddeadredemption2"
+        mod_id = 5180
+        
+        endorse_url = f"https://api.nexusmods.com/v1/games/{game_domain_name}/mods/{mod_id}/endorse.json"
+        headers = {
+            'accept': 'application/json',
+            'apikey': api_key
+        }
+
+        response = requests.post(endorse_url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        if response.status_code == 200:
+            print(f"Successfully endorsed mod ID {mod_id} for game {game_domain_name}.")
+            return True
+        else:
+            print(f"Failed to endorse mod ID {mod_id}. Response code: {response.status_code}")
+            return False
+
+    except requests.RequestException as req_err:
+        print(f"Error endorsing mod: {req_err}")
+        return False
+        
+def check_endorsement(api_key):
+    """Check if the user has endorsed the specified mod on Nexus Mods."""
+    try:
+        endorsements_url = "https://api.nexusmods.com/v1/user/endorsements.json"
+        headers = {
+            'accept': 'application/json',
+            'apikey': api_key
+        }
+
+        response = requests.get(endorsements_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        endorsements = response.json()
+
+        target_domain = "reddeadredemption2"
+        target_mod_id = 5180
+
+        for endorsement in endorsements:
+            if endorsement.get("domain_name") == target_domain and endorsement.get("mod_id") == target_mod_id:
+                return True
+
+        return False
+
+    except requests.RequestException as req_err:
+        print(f"Error checking endorsements: {req_err}")
+        return False
+    except ValueError as val_err:
+        print(f"Unexpected response format: {val_err}")
+        return False
 
 def refresh_modlist(mod_listbox, lml_folder, mods_xml_path, browse_button):
     """Refresh the mod list by reloading mods from the LML folder and updating the listbox."""
@@ -345,6 +647,24 @@ def refresh_asi(asi_listbox, lml_folder):
     
     except Exception as e:
         messagebox.showerror("Error", f"Failed to refresh ASI mods: {e}")
+        
+def refresh_conflicts(conflict_text, conflicts, lml_folder):
+    try:
+        conflict_text.configure(state="normal")
+        file_map = get_mods_and_files(lml_folder)
+        conflicts = find_conflicts(file_map)
+        mods = {mod.replace("\\", "/") for _, mod_list in file_map.items() for mod, _ in mod_list}
+        conflict_text.delete('1.0', ctk.END)
+        for file, mods in conflicts.items():
+            conflict_text.insert(ctk.END, f"File '{file}' is modified by:\n")
+            for mod, priority in mods:
+                label = f"{mod} (stream)" if priority == 2 else (f"{mod} (replace)" if priority == 1 else mod)
+                conflict_text.insert(ctk.END, f" - {label}\n")
+            conflict_text.insert(ctk.END, "\n")
+        conflict_text.configure(state="disabled")
+    except Exception as e:
+        error_message = f"Error refreshing conflicts: {str(e)}"
+        messagebox.showerror("Error", error_message)
 
 def clean_mods(lml_folder):
     """Move non-game files from the game root to the LMCCT backup folder."""
@@ -406,10 +726,18 @@ def update_restore_button_state(lml_folder, restore_button):
         restore_button.configure(state="normal")
     else:
         restore_button.configure(state="disabled")
-        
-def restart_program(lml_path_entry):
+ 
+def restart_for_lml(lml_path_entry):
     """Restart the program."""
     save_config(path=lml_path_entry.get().strip())
+    python_executable = sys.executable
+    script_path = sys.argv[0]
+    subprocess.Popen([python_executable, script_path])
+    sys.exit()
+    
+def restart_for_api(api_path_entry):
+    """Restart the program."""
+    save_config(api_key=api_path_entry.get().strip())
     python_executable = sys.executable
     script_path = sys.argv[0]
     subprocess.Popen([python_executable, script_path])
@@ -628,10 +956,10 @@ def display_main_window(app, mods, conflicts, lml_folder):
     settings_button = ctk.CTkButton(button_frame, text="Settings", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_settings_frame)
     settings_button.pack(fill="x", padx=10, pady=5)
     
-    version_label = ctk.CTkLabel(sidebar_frame, text="Version 1.4.0", font=("Segoe UI", 18, "bold"))
+    version_label = ctk.CTkLabel(sidebar_frame, text="Version 1.5.0", font=("Segoe UI", 18, "bold"))
     version_label.grid(row=5, column=0, sticky="s", padx=10, pady=0)
     
-    check_for_update(version_label)
+    check_for_update(version_label, main_window)
     
     nexus_label = ctk.CTkButton(
         sidebar_frame,
@@ -656,12 +984,9 @@ def display_main_window(app, mods, conflicts, lml_folder):
              "duplicate file names. It will then list the files that are conflicting, the mods\n"
              "they are being edited by, and where they currently are in the load order.\n\n"
              "Now with an auto-merge tool!\n\n\n"
-             "Version 1.4.0 changelog:\n"
+             "Version 1.5.0 changelog:\n"
              "-----\n"
-             "- Added ASI mod manager.\n"
-             "- Added mod cleaning and restoring options (for safe online play).\n"
-             "- Fixed progress bar.\n"
-             "- Fixed issue with Online Content Unlocker.\n"
+             "- Added Nexus Mods SSO.\n"
              "-----\n",
         font=("Segoe UI", 16, "bold"),
         fg_color="transparent"
@@ -802,6 +1127,17 @@ def display_main_window(app, mods, conflicts, lml_folder):
     conflicts_header_frame.pack(fill="x", anchor="n", pady=(0, 5))
     ctk.CTkLabel(conflicts_header_frame, text="Conflicts", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
     
+    refresh_conflicts_button = ctk.CTkButton(
+        conflicts_header_frame,
+        text="Refresh",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        font=("Segoe UI", 16, "bold"),
+        height=30,
+        command=lambda: refresh_conflicts(conflict_text, conflicts, lml_folder)
+    )
+    refresh_conflicts_button.pack(side="right", padx=10, pady=10)
+    
     conflicts_container_frame = ctk.CTkFrame(conflicts_frame, fg_color="transparent")
     conflicts_container_frame.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -815,12 +1151,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     conflict_text.bind("<Shift-Right>", lambda e: "break")
 
     if conflicts:
-        for file, mods in conflicts.items():
-            conflict_text.insert(ctk.END, f"File '{file}' is modified by:\n")
-            for mod, priority in mods:
-                label = f"{mod} (stream)" if priority == 2 else (f"{mod} (replace)" if priority == 1 else mod)
-                conflict_text.insert(ctk.END, f" - {label}\n")
-            conflict_text.insert(ctk.END, "\n")
+        refresh_conflicts(conflict_text, conflicts, lml_folder)
     else:
         conflict_text.insert(ctk.END, "No conflicts found.")
 
@@ -1351,7 +1682,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
                     else:
                         fileB_textbox.insert("end", f"{line}\n")
 
-        auto_merge_button.configure(state="enabled")
+        auto_merge_button.configure(state="normal")
         
         
     # Settings frame
@@ -1382,7 +1713,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     lml_path_entry.insert(0, lml_path if lml_path else "")
     lml_browse_button = ctk.CTkButton(settings_container_frame, text="Browse", command=lambda: browse_folder(lml_path_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
     lml_browse_button.grid(row=0, column=2, sticky="nw", padx=10, pady=10)
-    lml_restart_button = ctk.CTkButton(settings_container_frame, text="Apply", command=lambda: restart_program(lml_path_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    lml_restart_button = ctk.CTkButton(settings_container_frame, text="Apply", command=lambda: restart_for_lml(lml_path_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
     lml_restart_button.grid(row=1, column=2, sticky="n")
     
     appearance_mode_label = ctk.CTkLabel(settings_container_frame, text="Theme:", font=("Segoe UI", 18, "bold"))
@@ -1401,16 +1732,37 @@ def display_main_window(app, mods, conflicts, lml_folder):
     appearance_mode_menu.grid(row=3, column=1, sticky="nw", padx=10, pady=10)
     appearance_mode_menu.set(load_config()["theme"])
     
+    api_path_label = ctk.CTkLabel(settings_container_frame, text="Nexus API Key:", font=("Segoe UI", 17, "bold"))
+    api_path_label.grid(row=4, column=0, sticky="nw", padx=10, pady=10)
+    api_path_entry = ctk.CTkEntry(settings_container_frame, width=500, font=("Segoe UI", 15, "bold"))
+    api_path_entry.grid(row=4, column=1, sticky="nw", padx=10, pady=10)
+    api_apply_button = ctk.CTkButton(settings_container_frame, text="Apply", command=lambda: restart_for_api(api_path_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    api_apply_button.grid(row=4, column=2, sticky="n", padx=10, pady=10)
+    
+    api_key = config.get("api_key", "")
+    if api_key:
+        api_path_entry.insert(0, api_key)
+        api_path_entry.configure(show="*")
+    
     clean_button = ctk.CTkButton(settings_container_frame, text="Clean Mods", command=lambda: [clean_mods(lml_folder), update_restore_button_state(lml_folder, restore_button)], fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
-    clean_button.grid(row=4, column=0, sticky="n", pady=(50, 15))
+    clean_button.grid(row=5, column=0, sticky="n", pady=(50, 15))
     
     restore_button = ctk.CTkButton(settings_container_frame, text="Restore Mods", command=lambda: [restore_mods(lml_folder), update_restore_button_state(lml_folder, restore_button)], fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
-    restore_button.grid(row=4, column=1, sticky="nw", pady=(50, 15), padx=10)
+    restore_button.grid(row=5, column=1, sticky="nw", pady=(50, 15), padx=10)
     
     update_restore_button_state(lml_folder, restore_button)
     
     backup_label = ctk.CTkLabel(settings_container_frame, text="Allows you to play RDO safely.\nMods are stored in 'Red Dead Redemption 2\\LMCCT'.\nRun as Administrator or Take Ownership of your game folder if you have issues.", justify="left", text_color="grey", font=("Segoe UI", 16, "bold"))
-    backup_label.grid(row=5, columnspan=2, column=0, sticky="nw", padx=10)
+    backup_label.grid(row=6, columnspan=2, column=0, sticky="nw", padx=10)
+    
+    endorse_button = ctk.CTkButton(settings_container_frame, text="Endorse", command=lambda: endorse_mod(api_key), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    endorse_label = ctk.CTkLabel(settings_container_frame, text="Please consider endorsing! :)", justify="left", text_color="grey", font=("Segoe UI", 16, "bold"))
+    if api_key:
+        endorse_button.grid(row=7, column=0, sticky="n", pady=(50, 10))
+        endorse_label.grid(row=8, columnspan=2, column=0, sticky="nw", padx=10)
+        if check_endorsement(api_key) == True:
+            endorse_button.configure(text="Endorsed!", fg_color="#8b0000", command="", cursor="arrow")
+            endorse_label.configure(text="Thank you for endorsing! :)")
     
     show_home_frame()
 
@@ -1438,7 +1790,10 @@ def main():
     icon_path = os.path.join(IMG_DIR, "lmcct.ico")
     app.iconbitmap(icon_path)
 
+
     splash_root = show_splash()
+    
+    cleanup_installer_files()
 
     def after_splash():
         global config
