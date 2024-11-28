@@ -466,6 +466,25 @@ def open_mod_folder(selected_mod, lml_folder):
     else:
         print(f"Error: Folder '{mod_folder_path}' does not exist.")
         
+def open_mod_page(selected_item, api_key):
+    """Open the Nexus Mods page for the selected mod in a web browser."""
+    if not selected_item:
+        print("No mod selected.")
+        return
+
+    mod_name = selected_item.split(" (v")[0]
+
+    cache = load_tracked_cache()
+    stored_mod_details = cache.get("mod_details", {})
+
+    for mod_id, mod_details in stored_mod_details.items():
+        if mod_details.get("name") == mod_name:
+            mod_page_url = f"https://www.nexusmods.com/reddeadredemption2/mods/{mod_id}"
+            webbrowser.open(mod_page_url)
+            return
+
+    print("Mod details not found in the cache. Please refresh the tracked mods list.")
+        
 def open_lml_folder(lml_folder):
     if os.path.isdir(lml_folder):
         os.startfile(lml_folder)
@@ -491,6 +510,30 @@ def check_conflicts(app, entry_or_path):
     
     display_main_window(app, mods, conflicts, lml_folder)
     app.withdraw()
+    
+def get_tracked_cache_path():
+    """Get the path for the tracked mods cache file in AppData."""
+    appdata_dir = os.getenv('APPDATA')
+    app_folder = os.path.join(appdata_dir, 'LML Mod Conflict Checker Tool')
+    os.makedirs(app_folder, exist_ok=True)
+    return os.path.join(app_folder, 'tracked.dat')
+    
+def load_tracked_cache():
+    """Load the tracked mods cache from the tracked.dat file."""
+    cache_path = get_tracked_cache_path()
+    if os.path.exists(cache_path):
+        with open(cache_path, 'r', encoding='utf-8') as file:
+            try:
+                return json.load(file)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+    
+def save_tracked_cache(cache):
+    """Save the tracked mods cache to the tracked.dat file."""
+    cache_path = get_tracked_cache_path()
+    with open(cache_path, 'w', encoding='utf-8') as file:
+        json.dump(cache, file, ensure_ascii=False, indent=4)
 
 def get_config_path():
     """Return the path to the configuration file in a user-writable location."""
@@ -556,7 +599,7 @@ def check_and_save_path(app, entry):
     else:
         ctk.CTkMessagebox.show_warning(title="Error", message="Invalid or inaccessible folder path. Please select a valid LML folder.")
         
-def endorse_mod(api_key):
+def endorse_mod(api_key, endorse_button, endorse_label):
     """Endorse a specific mod on Nexus Mods for Red Dead Redemption 2."""
     try:
         game_domain_name = "reddeadredemption2"
@@ -573,6 +616,8 @@ def endorse_mod(api_key):
 
         if response.status_code == 200:
             print(f"Successfully endorsed mod ID {mod_id} for game {game_domain_name}.")
+            endorse_button.configure(text="Endorsed!", fg_color="#8b0000", command="", cursor="arrow")
+            endorse_label.configure(text="Thank you for endorsing! :)")
             return True
         else:
             print(f"Failed to endorse mod ID {mod_id}. Response code: {response.status_code}")
@@ -599,7 +644,7 @@ def check_endorsement(api_key):
         target_mod_id = 5180
 
         for endorsement in endorsements:
-            if endorsement.get("domain_name") == target_domain and endorsement.get("mod_id") == target_mod_id:
+            if endorsement.get("domain_name") == target_domain and endorsement.get("mod_id") == target_mod_id and endorsement.get("status") == "Endorsed":
                 return True
 
         return False
@@ -647,6 +692,62 @@ def refresh_asi(asi_listbox, lml_folder):
     
     except Exception as e:
         messagebox.showerror("Error", f"Failed to refresh ASI mods: {e}")
+        
+def refresh_tracked(tracked_listbox, api_key):
+    """Refresh the list of tracked mods for the user and display their names with version in the tracked_listbox."""
+    tracked_url = "https://api.nexusmods.com/v1/user/tracked_mods.json"
+    headers = {
+        'accept': 'application/json',
+        'apikey': api_key
+    }
+
+    try:
+        response = requests.get(tracked_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        tracked_mods = response.json()
+
+        domain_name = "reddeadredemption2"
+        current_tracked = [mod for mod in tracked_mods if mod["domain_name"] == domain_name]
+
+        cache = load_tracked_cache()
+        stored_tracked = cache.get("tracked_mods", [])
+        stored_mod_details = cache.get("mod_details", {})
+
+        current_tracked_ids = {mod["mod_id"] for mod in current_tracked}
+        stored_tracked_ids = {mod["mod_id"] for mod in stored_tracked if mod["domain_name"] == domain_name}
+
+        new_mod_ids = current_tracked_ids - stored_tracked_ids
+        removed_mod_ids = stored_tracked_ids - current_tracked_ids
+
+        for removed_id in removed_mod_ids:
+            stored_mod_details.pop(str(removed_id), None)
+
+        for mod in current_tracked:
+            mod_id = mod["mod_id"]
+            if mod_id in new_mod_ids:
+                mod_details_url = f"https://api.nexusmods.com/v1/games/{domain_name}/mods/{mod_id}.json"
+                try:
+                    mod_response = requests.get(mod_details_url, headers=headers, timeout=10)
+                    mod_response.raise_for_status()
+                    mod_details = mod_response.json()
+                    stored_mod_details[str(mod_id)] = mod_details
+                except requests.RequestException as mod_err:
+                    print(f"Error fetching details for mod ID {mod_id}: {mod_err}")
+
+        cache["tracked_mods"] = current_tracked
+        cache["mod_details"] = stored_mod_details
+        save_tracked_cache(cache)
+
+        tracked_listbox.delete(0, ctk.END)
+
+        for mod_id, mod_details in stored_mod_details.items():
+            if mod_details.get("domain_name") == domain_name:
+                mod_name = mod_details.get("name", "Unknown Mod")
+                mod_version = mod_details.get("version", "Unknown Version")
+                tracked_listbox.insert(ctk.END, f"{mod_name} (v{mod_version})")
+
+    except requests.RequestException as req_err:
+        print(f"Error fetching tracked mods: {req_err}")
         
 def refresh_conflicts(conflict_text, conflicts, lml_folder):
     try:
@@ -734,14 +835,36 @@ def restart_for_lml(lml_path_entry):
     script_path = sys.argv[0]
     subprocess.Popen([python_executable, script_path])
     sys.exit()
-    
+
 def restart_for_api(api_path_entry):
-    """Restart the program."""
-    save_config(api_key=api_path_entry.get().strip())
-    python_executable = sys.executable
-    script_path = sys.argv[0]
-    subprocess.Popen([python_executable, script_path])
-    sys.exit()
+    """Restart the program with the updated API key after validating it."""
+    api_key = api_path_entry.get().strip()
+
+    if validate_api_key(api_key):
+        save_config(api_key=api_key)
+        messagebox.showinfo("API Key Valid", "The API key is valid and has been saved.")
+        python_executable = sys.executable
+        script_path = sys.argv[0]
+        subprocess.Popen([python_executable, script_path])
+        sys.exit()
+    else:
+        messagebox.showerror("Invalid API Key", "The API key you entered is invalid. Please try again.")
+    
+def validate_api_key(api_key):
+    """Validate the provided Nexus Mods API key."""
+    validation_url = "https://api.nexusmods.com/v1/users/validate.json"
+    headers = {
+        'accept': 'application/json',
+        'apikey': api_key
+    }
+
+    try:
+        response = requests.get(validation_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return True
+    except requests.RequestException as req_err:
+        print(f"API key validation error: {req_err}")
+        return False
 
 def show_splash():
     splash_width, splash_height = 600, 350
@@ -829,6 +952,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
 
     mods_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     asi_frame = ctk.CTkFrame(main_window, fg_color="transparent")
+    tracked_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     conflicts_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     merge_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     settings_frame = ctk.CTkFrame(main_window, fg_color="transparent")
@@ -837,6 +961,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_frame.grid(row=0, column=2, columnspan=1, rowspan=3, sticky="nsew")
         mods_frame.grid_forget()
         asi_frame.grid_forget()
+        tracked_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
@@ -845,6 +970,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#8b0000")
         mods_button.configure(fg_color="#b22222")
         asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -853,6 +979,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         mods_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
         asi_frame.grid_forget()
+        tracked_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.pack(side="right")
         merge_frame.grid_forget()
@@ -861,6 +988,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#8b0000")
         asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -869,6 +997,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         asi_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
         mods_frame.grid_forget()
+        tracked_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
@@ -877,6 +1006,25 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
         asi_button.configure(fg_color="#8b0000")
+        tracked_button.configure(fg_color="#b22222")
+        conflicts_button.configure(fg_color="#b22222")
+        merge_button.configure(fg_color="#b22222")
+        settings_button.configure(fg_color="#b22222")
+        
+    def show_tracked_frame():
+        tracked_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
+        home_frame.grid_forget()
+        mods_frame.grid_forget()
+        asi_frame.grid_forget()
+        conflicts_frame.grid_forget()
+        button_frame.grid_forget()
+        merge_frame.grid_forget()
+        settings_frame.grid_forget()
+
+        home_button.configure(fg_color="#b22222")
+        mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#8b0000")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -886,6 +1034,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_frame.grid_forget()
         mods_frame.grid_forget()
         asi_frame.grid_forget()
+        tracked_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
         settings_frame.grid_forget()
@@ -893,6 +1042,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
         asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#8b0000")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -902,6 +1052,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_frame.grid_forget()
         mods_frame.grid_forget()
         asi_frame.grid_forget()
+        tracked_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.grid_forget()
         settings_frame.grid_forget()
@@ -909,6 +1060,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
         asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#8b0000")
         settings_button.configure(fg_color="#b22222")
@@ -918,6 +1070,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_frame.grid_forget()
         mods_frame.grid_forget()
         asi_frame.grid_forget()
+        tracked_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
@@ -925,6 +1078,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
         asi_button.configure(fg_color="#b22222")
+        tracked_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#8b0000")
@@ -939,7 +1093,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     button_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(100, 10))
     
     home_button = ctk.CTkButton(button_frame, text="Home", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_home_frame)
-    home_button.pack(fill="x", padx=10, pady=5)
+    home_button.pack(fill="x", padx=10, pady=5)  
     
     asi_button = ctk.CTkButton(button_frame, text="ASI Mods", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_asi_frame)
     asi_button.pack(fill="x", padx=10, pady=5)
@@ -952,6 +1106,11 @@ def display_main_window(app, mods, conflicts, lml_folder):
 
     merge_button = ctk.CTkButton(button_frame, text="Merge", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_merge_frame)
     merge_button.pack(fill="x", padx=10, pady=5)
+    
+    tracked_button = ctk.CTkButton(button_frame, text="Tracked Mods", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_tracked_frame)
+    api_key = config.get("api_key", "")
+    if api_key:
+        tracked_button.pack(fill="x", padx=10, pady=5)      
     
     settings_button = ctk.CTkButton(button_frame, text="Settings", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_settings_frame)
     settings_button.pack(fill="x", padx=10, pady=5)
@@ -986,7 +1145,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
              "Now with an auto-merge tool!\n\n\n"
              "Version 1.5.0 changelog:\n"
              "-----\n"
-             "- Added Nexus Mods SSO.\n"
+             "- Added Nexus Mods API integration.\n"
              "-----\n",
         font=("Segoe UI", 16, "bold"),
         fg_color="transparent"
@@ -1121,6 +1280,43 @@ def display_main_window(app, mods, conflicts, lml_folder):
     asi_listbox.pack(side="left", fill="both", expand=True)
     
     refresh_asi(asi_listbox, lml_folder)
+    
+    # Tracked frame
+    tracked_header_frame = ctk.CTkFrame(tracked_frame)
+    tracked_header_frame.pack(fill="x", anchor="n", pady=(0, 5))
+    ctk.CTkLabel(tracked_header_frame, text="Tracked Mods", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
+    
+    mod_page_button = ctk.CTkButton(
+        tracked_header_frame,
+        text="Open Mod Page",
+        state="disabled",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        font=("Segoe UI", 16, "bold"),
+        height=30,
+        command=lambda: open_mod_page(tracked_listbox.get(), api_key)
+    )
+    mod_page_button.pack(side="right", padx=10)
+    
+    tracked_container_frame = ctk.CTkFrame(tracked_frame, fg_color="transparent")
+    tracked_container_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    tracked_listbox = CTkListbox(
+        tracked_container_frame,
+        command=lambda x: mod_page_button.configure(state="normal"),
+        height=650,
+        width=500,
+        highlight_color="#8b0000",
+        hover_color="#b22222",
+        border_width=2,
+        border_color="#545454",
+        font=mod_listbox_font
+    )
+    tracked_listbox.pack(side="left", fill="both", expand=True)
+    
+    api_key = config.get("api_key", "")
+    if api_key:
+        refresh_tracked(tracked_listbox, api_key)
     
     # Conflicts frame
     conflicts_header_frame = ctk.CTkFrame(conflicts_frame)
@@ -1732,17 +1928,17 @@ def display_main_window(app, mods, conflicts, lml_folder):
     appearance_mode_menu.grid(row=3, column=1, sticky="nw", padx=10, pady=10)
     appearance_mode_menu.set(load_config()["theme"])
     
-    api_path_label = ctk.CTkLabel(settings_container_frame, text="Nexus API Key:", font=("Segoe UI", 17, "bold"))
-    api_path_label.grid(row=4, column=0, sticky="nw", padx=10, pady=10)
-    api_path_entry = ctk.CTkEntry(settings_container_frame, width=500, font=("Segoe UI", 15, "bold"))
-    api_path_entry.grid(row=4, column=1, sticky="nw", padx=10, pady=10)
-    api_apply_button = ctk.CTkButton(settings_container_frame, text="Apply", command=lambda: restart_for_api(api_path_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    api_key_label = ctk.CTkLabel(settings_container_frame, text="Nexus API Key:", font=("Segoe UI", 17, "bold"))
+    api_key_label.grid(row=4, column=0, sticky="nw", padx=10, pady=10)
+    api_key_entry = ctk.CTkEntry(settings_container_frame, width=500, font=("Segoe UI", 15, "bold"))
+    api_key_entry.grid(row=4, column=1, sticky="nw", padx=10, pady=10)
+    api_apply_button = ctk.CTkButton(settings_container_frame, text="Apply", command=lambda: restart_for_api(api_key_entry), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
     api_apply_button.grid(row=4, column=2, sticky="n", padx=10, pady=10)
     
     api_key = config.get("api_key", "")
     if api_key:
-        api_path_entry.insert(0, api_key)
-        api_path_entry.configure(show="*")
+        api_key_entry.insert(0, api_key)
+        api_key_entry.configure(show="*")
     
     clean_button = ctk.CTkButton(settings_container_frame, text="Clean Mods", command=lambda: [clean_mods(lml_folder), update_restore_button_state(lml_folder, restore_button)], fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
     clean_button.grid(row=5, column=0, sticky="n", pady=(50, 15))
@@ -1755,7 +1951,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     backup_label = ctk.CTkLabel(settings_container_frame, text="Allows you to play RDO safely.\nMods are stored in 'Red Dead Redemption 2\\LMCCT'.\nRun as Administrator or Take Ownership of your game folder if you have issues.", justify="left", text_color="grey", font=("Segoe UI", 16, "bold"))
     backup_label.grid(row=6, columnspan=2, column=0, sticky="nw", padx=10)
     
-    endorse_button = ctk.CTkButton(settings_container_frame, text="Endorse", command=lambda: endorse_mod(api_key), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    endorse_button = ctk.CTkButton(settings_container_frame, text="Endorse", command=lambda: endorse_mod(api_key, endorse_button, endorse_label), fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
     endorse_label = ctk.CTkLabel(settings_container_frame, text="Please consider endorsing! :)", justify="left", text_color="grey", font=("Segoe UI", 16, "bold"))
     if api_key:
         endorse_button.grid(row=7, column=0, sticky="n", pady=(50, 10))
