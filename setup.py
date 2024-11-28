@@ -17,17 +17,14 @@ executables = [
 ]
 
 build_options = {
-    "packages": [
-        "os", "sys", "time", "PIL", "customtkinter", "CTkListbox", "xml", "tkinter"
-    ],
-    "include_files": [
-        (img_dir, os.path.join("lib", "img"))
-    ],
+    "packages": ["customtkinter", "PIL", "CTkListbox", "xml.etree.ElementTree", "tkinter"],
+    "excludes": ["tkinter.test", "unittest"],
+    "include_files": [(img_dir, os.path.join("lib", "img"))],
 }
 
 setup(
     name="LML Mod Conflict Checker Tool",
-    version="1.3.0",
+    version="1.4.0",
     description="LML Mod Conflict Checker Tool",
     author="generatedmax - Nexus Mods",
     options={"build_exe": build_options},

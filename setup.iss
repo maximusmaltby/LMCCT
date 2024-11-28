@@ -1,5 +1,5 @@
 #define MyAppName "LML Mod Conflict Checker Tool"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "generatedmax - Nexus Mods"
 #define MyAppURL "https://www.nexusmods.com/reddeadredemption2/mods/5180"
 #define MyAppExeName "LMCCT.exe"
