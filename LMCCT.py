@@ -3,6 +3,7 @@
 import os
 import sys
 import string
+import shutil
 import difflib
 import requests
 import subprocess
@@ -78,7 +79,7 @@ def get_mods_and_files(lml_folder):
     A mod is identified if any folder contains an install.xml file.
     """
     file_map = defaultdict(list)
-    ignored_files = {"install.xml", "strings.gxt2", "content.xml", "__folder_managed_by_vortex"}
+    ignored_files = {"install.xml", "strings.gxt2", "__folder_managed_by_vortex"}
 
     def find_mod_folders(folder_path):
         """Recursively scan folders for install.xml and identify mods."""
@@ -107,6 +108,8 @@ def get_mods_and_files(lml_folder):
 def find_conflicts(file_map):
     conflicts = {}
     for file, mods in file_map.items():
+        if file.lower() == "content.xml":
+            continue
         unique_mods = {mod for mod, _ in mods}
         if len(unique_mods) > 1:
             conflicts[file] = mods
@@ -204,7 +207,7 @@ def check_for_update(version_label):
         response.raise_for_status()
         remote_version = response.text.strip()
 
-        if remote_version != "1.3.0":
+        if remote_version != "1.4.0":
             version_label.configure(text="Update " + remote_version + " Available!", text_color="#f88379")
     except requests.RequestException:
         print("Failed to check for updates.")
@@ -220,6 +223,12 @@ def open_mod_folder(selected_mod, lml_folder):
 def open_lml_folder(lml_folder):
     if os.path.isdir(lml_folder):
         os.startfile(lml_folder)
+    else:
+        print(f"Error: LML folder '{lml_folder}' does not exist.")
+        
+def open_game_folder(lml_folder):
+    if os.path.isdir(lml_folder):
+        os.startfile(os.path.dirname(lml_folder))
     else:
         print(f"Error: LML folder '{lml_folder}' does not exist.")
 
@@ -317,6 +326,86 @@ def refresh_modlist(mod_listbox, lml_folder, mods_xml_path, browse_button):
         error_message = f"Error refreshing mod list: {str(e)}"
         messagebox.showerror("Error", error_message)
 
+def refresh_asi(asi_listbox, lml_folder):
+    """Refresh the list of ASI mods in the game folder."""
+    try:
+        asi_folder = os.path.dirname(lml_folder)
+        
+        if not os.path.isdir(asi_folder):
+            raise FileNotFoundError(f"Game root folder '{asi_folder}' does not exist or is inaccessible.")
+        
+        asi_files = [file for file in os.listdir(asi_folder) if file.lower().endswith(".asi")]
+
+        asi_listbox.delete(0, ctk.END)
+        if asi_files:
+            for asi_file in asi_files:
+                asi_listbox.insert(ctk.END, asi_file)
+        else:
+            asi_listbox.insert(ctk.END, "No ASI mods found.")
+    
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to refresh ASI mods: {e}")
+
+def clean_mods(lml_folder):
+    """Move non-game files from the game root to the LMCCT backup folder."""
+    root_dir = os.path.dirname(lml_folder)
+    backup_dir = os.path.join(root_dir, "LMCCT")
+
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+
+    game_files = {
+        "index.bin", "RDR2.exe", "uninstall.exe", "amd_ags_x64.dll", "bink2w64.dll", 
+        "dxilconv7.dll", "ffx_fsr2_api_dx12_x64.dll", "ffx_fsr2_api_vk_x64.dll", 
+        "ffx_fsr2_api_x64.dll", "NvLowLatencyVk.dll", "nvngx_dlss.dll", "oo2core_5_win64.dll", 
+        "anim_0.rpf", "appdata0_update.rpf", "common_0.rpf", "data_0.rpf", "hd_0.rpf", 
+        "levels_0.rpf", "levels_1.rpf", "levels_2.rpf", "levels_3.rpf", "levels_4.rpf", 
+        "levels_5.rpf", "levels_6.rpf", "levels_7.rpf", "movies_0.rpf", "packs_0.rpf", 
+        "packs_1.rpf", "rowpack_0.rpf", "shaders_x64.rpf", "textures_0.rpf", "textures_1.rpf", 
+        "update_1.rpf", "update_2.rpf", "update_3.rpf", "update_4.rpf", "title.rgl", "steam_appid.txt",
+        "EOSSDK-Win64-Shipping.dll", "PlayRDR2.exe", "steam_api64.dll", "installscript.vdf", "installscript_sdk.vdf"
+    }
+
+    for filename in os.listdir(root_dir):
+        file_path = os.path.join(root_dir, filename)
+        
+        if os.path.isfile(file_path) and filename not in game_files:
+            try:
+                shutil.move(file_path, os.path.join(backup_dir, filename))
+                print(f"Moved: {filename}")
+            except Exception as e:
+                print(f"Failed to move {filename}: {e}")
+
+def restore_mods(lml_folder):
+    """Restore files from the LMCCT backup folder to the game root."""
+    root_dir = os.path.dirname(lml_folder)
+    backup_dir = os.path.join(root_dir, "LMCCT")
+
+    if os.path.exists(backup_dir):
+        for filename in os.listdir(backup_dir):
+            file_path = os.path.join(backup_dir, filename)
+            try:
+                shutil.move(file_path, os.path.join(root_dir, filename))
+                print(f"Restored: {filename}")
+            except Exception as e:
+                print(f"Failed to restore {filename}: {e}")
+        try:
+            os.rmdir(backup_dir)
+            print(f"Removed backup directory: {backup_dir}")
+        except Exception as e:
+            print(f"Failed to remove backup directory: {e}")
+    else:
+        print(f"No backup folder found at {backup_dir}")
+        
+def update_restore_button_state(lml_folder, restore_button):
+    """Enable or disable the restore button based on the presence of the LMCCT folder."""
+    root_dir = os.path.dirname(lml_folder)
+    lmcct_dir = os.path.join(root_dir, "LMCCT")
+    
+    if os.path.exists(lmcct_dir) and os.path.isdir(lmcct_dir):
+        restore_button.configure(state="normal")
+    else:
+        restore_button.configure(state="disabled")
         
 def restart_program(lml_path_entry):
     """Restart the program."""
@@ -336,8 +425,9 @@ def show_splash():
 
     header_img = load_image("header.webp", splash_width, splash_height)
     if header_img:
-        progressbar = ctk.CTkProgressBar(master=splash_root, determinate_speed=0.45, progress_color="#b22222")
+        progressbar = ctk.CTkProgressBar(master=splash_root, width=600, progress_color="#b22222")
         progressbar.pack(side="bottom")
+        progressbar.set(0)
         progressbar.start()
         splash_label = ctk.CTkLabel(splash_root, image=header_img, text="")
         splash_label.pack()
@@ -410,6 +500,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     home_frame.grid_columnconfigure(0, weight=1)
 
     mods_frame = ctk.CTkFrame(main_window, fg_color="transparent")
+    asi_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     conflicts_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     merge_frame = ctk.CTkFrame(main_window, fg_color="transparent")
     settings_frame = ctk.CTkFrame(main_window, fg_color="transparent")
@@ -417,6 +508,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     def show_home_frame():
         home_frame.grid(row=0, column=2, columnspan=1, rowspan=3, sticky="nsew")
         mods_frame.grid_forget()
+        asi_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
@@ -424,6 +516,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
 
         home_button.configure(fg_color="#8b0000")
         mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -431,6 +524,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     def show_mods_frame():
         mods_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
+        asi_frame.grid_forget()
         conflicts_frame.grid_forget()
         button_frame.pack(side="right")
         merge_frame.grid_forget()
@@ -438,6 +532,23 @@ def display_main_window(app, mods, conflicts, lml_folder):
 
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#8b0000")
+        asi_button.configure(fg_color="#b22222")
+        conflicts_button.configure(fg_color="#b22222")
+        merge_button.configure(fg_color="#b22222")
+        settings_button.configure(fg_color="#b22222")
+        
+    def show_asi_frame():
+        asi_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
+        home_frame.grid_forget()
+        mods_frame.grid_forget()
+        conflicts_frame.grid_forget()
+        button_frame.grid_forget()
+        merge_frame.grid_forget()
+        settings_frame.grid_forget()
+
+        home_button.configure(fg_color="#b22222")
+        mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#8b0000")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -446,12 +557,14 @@ def display_main_window(app, mods, conflicts, lml_folder):
         conflicts_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
         mods_frame.grid_forget()
+        asi_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
         settings_frame.grid_forget()
 
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#8b0000")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#b22222")
@@ -459,13 +572,15 @@ def display_main_window(app, mods, conflicts, lml_folder):
     def show_merge_frame():
         merge_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
-        conflicts_frame.grid_forget()
         mods_frame.grid_forget()
+        asi_frame.grid_forget()
+        conflicts_frame.grid_forget()
         button_frame.grid_forget()
         settings_frame.grid_forget()
 
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#8b0000")
         settings_button.configure(fg_color="#b22222")
@@ -473,13 +588,15 @@ def display_main_window(app, mods, conflicts, lml_folder):
     def show_settings_frame():
         settings_frame.grid(row=0, column=2, columnspan=1, pady=10, rowspan=3, sticky="nswe")
         home_frame.grid_forget()
-        conflicts_frame.grid_forget()
         mods_frame.grid_forget()
+        asi_frame.grid_forget()
+        conflicts_frame.grid_forget()
         button_frame.grid_forget()
         merge_frame.grid_forget()
 
         home_button.configure(fg_color="#b22222")
         mods_button.configure(fg_color="#b22222")
+        asi_button.configure(fg_color="#b22222")
         conflicts_button.configure(fg_color="#b22222")
         merge_button.configure(fg_color="#b22222")
         settings_button.configure(fg_color="#8b0000")
@@ -495,8 +612,11 @@ def display_main_window(app, mods, conflicts, lml_folder):
     
     home_button = ctk.CTkButton(button_frame, text="Home", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_home_frame)
     home_button.pack(fill="x", padx=10, pady=5)
+    
+    asi_button = ctk.CTkButton(button_frame, text="ASI Mods", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_asi_frame)
+    asi_button.pack(fill="x", padx=10, pady=5)
 
-    mods_button = ctk.CTkButton(button_frame, text="Mods", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_mods_frame)
+    mods_button = ctk.CTkButton(button_frame, text="LML Mods", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_mods_frame)
     mods_button.pack(fill="x", padx=10, pady=5)
 
     conflicts_button = ctk.CTkButton(button_frame, text="Conflicts", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_conflicts_frame)
@@ -508,7 +628,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     settings_button = ctk.CTkButton(button_frame, text="Settings", font=("Segoe UI", 18, "bold"), fg_color="#b22222", hover_color="#8b0000", height=40, border_spacing=10, command=show_settings_frame)
     settings_button.pack(fill="x", padx=10, pady=5)
     
-    version_label = ctk.CTkLabel(sidebar_frame, text="Version 1.3.0", font=("Segoe UI", 18, "bold"))
+    version_label = ctk.CTkLabel(sidebar_frame, text="Version 1.4.0", font=("Segoe UI", 18, "bold"))
     version_label.grid(row=5, column=0, sticky="s", padx=10, pady=0)
     
     check_for_update(version_label)
@@ -536,16 +656,12 @@ def display_main_window(app, mods, conflicts, lml_folder):
              "duplicate file names. It will then list the files that are conflicting, the mods\n"
              "they are being edited by, and where they currently are in the load order.\n\n"
              "Now with an auto-merge tool!\n\n\n"
-             "Version 1.3.0 changelog:\n"
+             "Version 1.4.0 changelog:\n"
              "-----\n"
-             "- Added merge tool (BETA).\n"
-             "- Added settings page.\n"
-             "- Added update check.\n"
-             "- Changed home background.\n"
-             "- Window is now resizable with fullscreen support.\n"
-             "- Nested mods now appear in the mod browser.\n"
-             "- Updated file conflict whitelist.\n"
-             "- Many bug fixes and improvements.\n"
+             "- Added ASI mod manager.\n"
+             "- Added mod cleaning and restoring options (for safe online play).\n"
+             "- Fixed progress bar.\n"
+             "- Fixed issue with Online Content Unlocker.\n"
              "-----\n",
         font=("Segoe UI", 16, "bold"),
         fg_color="transparent"
@@ -556,7 +672,7 @@ def display_main_window(app, mods, conflicts, lml_folder):
     # Mods frame
     mods_header_frame = ctk.CTkFrame(mods_frame)
     mods_header_frame.pack(fill="x", anchor="n", pady=(0, 5))
-    ctk.CTkLabel(mods_header_frame, text="Mods", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
+    ctk.CTkLabel(mods_header_frame, text="LML Mods", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
 
     refresh_mods_button = ctk.CTkButton(
         mods_header_frame,
@@ -636,6 +752,50 @@ def display_main_window(app, mods, conflicts, lml_folder):
     mod_listbox.pack(side="left", fill="both", expand=True)
 
     refresh_modlist(mod_listbox, lml_folder, os.path.join(lml_folder, "mods.xml"), browse_button)
+    
+    # ASI Frame
+    asi_header_frame = ctk.CTkFrame(asi_frame)
+    asi_header_frame.pack(fill="x", anchor="n", pady=(0, 5))
+    ctk.CTkLabel(asi_header_frame, text="ASI Mods", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
+    
+    refresh_asi_button = ctk.CTkButton(
+        asi_header_frame,
+        text="Refresh",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        font=("Segoe UI", 16, "bold"),
+        height=30,
+        command=lambda: refresh_asi(asi_listbox, lml_folder)
+    )
+    refresh_asi_button.pack(side="right", padx=10, pady=10)
+    
+    asi_game_folder_button = ctk.CTkButton(
+        asi_header_frame,
+        text="Browse RDR2 Folder",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        font=("Segoe UI", 16, "bold"),
+        height=30,
+        command=lambda: open_game_folder(lml_folder)
+    )
+    asi_game_folder_button.pack(side="right")       
+    
+    asi_container_frame = ctk.CTkFrame(asi_frame, fg_color="transparent")
+    asi_container_frame.pack(fill="both", expand=True, padx=10, pady=10)    
+    
+    asi_listbox = CTkListbox(
+        asi_container_frame,
+        height=650,
+        width=500,
+        highlight_color="#8b0000",
+        hover_color="#b22222",
+        border_width=2,
+        border_color="#545454",
+        font=mod_listbox_font
+    )
+    asi_listbox.pack(side="left", fill="both", expand=True)
+    
+    refresh_asi(asi_listbox, lml_folder)
     
     # Conflicts frame
     conflicts_header_frame = ctk.CTkFrame(conflicts_frame)
@@ -1200,6 +1360,17 @@ def display_main_window(app, mods, conflicts, lml_folder):
     settings_header_frame.pack(fill="x", anchor="n", pady=(0, 5))
     ctk.CTkLabel(settings_header_frame, text="Settings", font=("Segoe UI", 22, "bold")).pack(side="left", padx=5, pady=10)
     
+    settings_game_folder_button = ctk.CTkButton(
+        settings_header_frame,
+        text="Browse RDR2 Folder",
+        fg_color="#b22222",
+        hover_color="#8b0000",
+        font=("Segoe UI", 16, "bold"),
+        height=30,
+        command=lambda: open_game_folder(lml_folder)
+    )
+    settings_game_folder_button.pack(side="right", padx=10, pady=10)    
+    
     settings_container_frame = ctk.CTkFrame(settings_frame, fg_color="transparent")
     settings_container_frame.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -1229,6 +1400,17 @@ def display_main_window(app, mods, conflicts, lml_folder):
     )
     appearance_mode_menu.grid(row=3, column=1, sticky="nw", padx=10, pady=10)
     appearance_mode_menu.set(load_config()["theme"])
+    
+    clean_button = ctk.CTkButton(settings_container_frame, text="Clean Mods", command=lambda: [clean_mods(lml_folder), update_restore_button_state(lml_folder, restore_button)], fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    clean_button.grid(row=4, column=0, sticky="n", pady=(50, 15))
+    
+    restore_button = ctk.CTkButton(settings_container_frame, text="Restore Mods", command=lambda: [restore_mods(lml_folder), update_restore_button_state(lml_folder, restore_button)], fg_color="#b22222", hover_color="#8b0000", font=("Segoe UI", 16, "bold"))
+    restore_button.grid(row=4, column=1, sticky="nw", pady=(50, 15), padx=10)
+    
+    update_restore_button_state(lml_folder, restore_button)
+    
+    backup_label = ctk.CTkLabel(settings_container_frame, text="Allows you to play RDO safely.\nMods are stored in 'Red Dead Redemption 2\\LMCCT'.\nRun as Administrator or Take Ownership of your game folder if you have issues.", justify="left", text_color="grey", font=("Segoe UI", 16, "bold"))
+    backup_label.grid(row=5, columnspan=2, column=0, sticky="nw", padx=10)
     
     show_home_frame()
 
