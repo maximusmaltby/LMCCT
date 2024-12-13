@@ -1,5 +1,5 @@
 #define MyAppName "Red Dead Modding Tool"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "generatedmax - Nexus Mods"
 #define MyAppURL "https://www.nexusmods.com/reddeadredemption2/mods/5180"
 #define MyAppExeName "Red Dead Modding Tool.exe"

@@ -86,7 +86,7 @@ class CustomBuild:
 
 setup(
     name="Red Dead Modding Tool",
-    version="2.0.0",
+    version="2.0.1",
     description="Red Dead Modding Tool",
     author="generatedmax - Nexus Mods",
     options={"build_exe": build_options},
